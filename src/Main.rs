@@ -1,7 +1,7 @@
-mod goroutine_pool;
+mod gorust;
 
-use goroutine_pool::thread_pool::GoroutinePool;
-use goroutine_pool::async_pool::AsyncGoroutinePool;
+use gorust::thread_pool::GoroutinePool;
+use gorust::async_pool::AsyncGoroutinePool;
 
 #[tokio::main]
 async fn main() {
