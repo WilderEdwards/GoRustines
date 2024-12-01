@@ -1,0 +1,12 @@
+[package]
+name = "gorustines"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+criterion = "0.5.1"
+tokio = { version = "1.0", features = ["full"] }
+crossbeam = "0.8"
+rayon = "1.8"
+threadpool = "1.8"
+

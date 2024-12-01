@@ -3,7 +3,8 @@ use rayon::prelude::*;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-/// Enhanced Goroutine Pool with advanced features
+// Enhanced Goroutine Pool with advanced features like parallel execution and result collection
+// uses crossbeam channels and rayon parallel iterators
 pub struct EnhancedGoroutinePool {
     // Channel for task distribution
     task_sender: Sender<Box<dyn FnOnce() + Send>>,
@@ -83,7 +84,7 @@ impl EnhancedGoroutinePool {
     }
 }
 
-// Example usage demonstration
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -4,17 +4,17 @@ use std::thread;
 use std::time::Duration;
 
 /// A simple channel-like structure using standard library primitives
-pub struct StandardChannel<T> {
+pub struct Channelish<T> {
     buffer: Arc<Mutex<VecDeque<T>>>,
     capacity: usize,
     not_full: Arc<Condvar>,
     not_empty: Arc<Condvar>,
 }
 
-impl<T> StandardChannel<T> {
-    /// Create a new channel with a specified buffer capacity
+impl<T> Channelish<T> {
+    /// Creates a new "channel" with a specified buffer capacity
     pub fn new(capacity: usize) -> Self {
-        StandardChannel {
+        Channelish {
             buffer: Arc::new(Mutex::new(VecDeque::with_capacity(capacity))),
             capacity,
             not_full: Arc::new(Condvar::new()),
@@ -22,21 +22,24 @@ impl<T> StandardChannel<T> {
         }
     }
 
+    //Creats artificial buffer to 'prevent' deadlock. as well as using std sync primitives to create attributes to check if buffer is full or empty
+
+
     /// Send a value, blocking if the channel is full
     pub fn send(&self, value: T) {
         let mut buffer = self.buffer.lock().unwrap();
         
-        // Wait while the buffer is full
+        // Wait while the buffer is full. A spurious wakeup is possible, so we need to check the condition again
         while buffer.len() == self.capacity {
             buffer = self.not_full.wait(buffer).unwrap();
         }
-        
+        //primitive push_back method to add value to buffer
         buffer.push_back(value);
         drop(buffer);
         self.not_empty.notify_one();
     }
 
-    /// Receive a value, blocking if the channel is empty
+    /// Method to receive a value, blocking if the channel is empty
     pub fn recv(&self) -> T {
         let mut buffer = self.buffer.lock().unwrap();
         
@@ -54,13 +57,13 @@ impl<T> StandardChannel<T> {
 }
 
 /// A simple goroutine-like pool using standard library threads
-pub struct StandardGoroutinePool {
+pub struct PrimitivePool {
     threads: Vec<thread::JoinHandle<()>>,
     task_queue: Arc<Mutex<VecDeque<Box<dyn FnOnce() + Send>>>>,
     queue_condvar: Arc<Condvar>,
 }
 
-impl StandardGoroutinePool {
+impl PrimitivePool {
     /// Create a new pool with a specified number of worker threads
     pub fn new(num_workers: usize) -> Self {
         let task_queue = Arc::new(Mutex::new(VecDeque::new()));
@@ -91,7 +94,7 @@ impl StandardGoroutinePool {
             threads.push(handle);
         }
 
-        StandardGoroutinePool {
+        PrimitivePool {
             threads,
             task_queue,
             queue_condvar,
@@ -110,44 +113,6 @@ impl StandardGoroutinePool {
     }
 }
 
-fn main() {
-    // Demonstrate channel usage
-    let channel = StandardChannel::new(10);
-    
-    // Producer thread
-    let channel_send = channel.clone();
-    let producer = thread::spawn(move || {
-        for i in 0..20 {
-            channel_send.send(i);
-            println!("Sent: {}", i);
-            thread::sleep(Duration::from_millis(50));
-        }
-    });
 
-    // Create a consumer thread
-    let channel_recv = channel.clone();
-    let consumer = thread::spawn(move || {
-        for _ in 0..20 {
-            let value = channel_recv.recv();
-            println!("Received: {}", value);
-        }
-    });
-
-    // Demonstratation of the 'goroutine' pool.
-    let pool = StandardGoroutinePool::new(4);
-    
-    for i in 0..10 {
-        pool.spawn(move || {
-            println!("Task {} started", i);
-            thread::sleep(Duration::from_millis(100));
-            println!("Task {} completed", i);
-        });
-    }
-
-    // Wait for threads to complete
-    producer.join().unwrap();
-    consumer.join().unwrap();
-
-    // Note: The pool threads will continue running
-    thread::sleep(Duration::from_millis(500));
-}
+//Note: Both implementations, like the others, do not fully accomplish the task of goroutines, specifically in dynamic scheduling, thread creation in the pool, and channel implementation
+// specifically, the tokio runtime allows for a more efficient and dynamic scheduling of tasks, as well as the ability to create a pool of threads that can be used to execute tasks concurrently
