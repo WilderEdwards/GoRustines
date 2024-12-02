@@ -1,115 +1,218 @@
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, Condvar};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-/// A simple channel-like structure using standard library primitives
+#[derive(Debug)]
+pub enum SendError<T> {
+    Full(T),
+    Disconnected(T),
+}
+
+#[derive(Debug)]
+pub enum SendTimeoutError<T> {
+    Timeout(T),
+    Disconnected(T),
+}
+
+#[derive(Debug)]
+pub enum RecvError {
+    Empty,
+    Disconnected,
+}
+
+/// A channel-like structure using standard library primitives
 pub struct Channelish<T> {
     buffer: Arc<Mutex<VecDeque<T>>>,
+    size: Arc<Mutex<usize>>,
     capacity: usize,
     not_full: Arc<Condvar>,
     not_empty: Arc<Condvar>,
+    is_closed: Arc<Mutex<bool>>,
 }
 
 impl<T> Channelish<T> {
-    /// Creates a new "channel" with a specified buffer capacity
     pub fn new(capacity: usize) -> Self {
         Channelish {
             buffer: Arc::new(Mutex::new(VecDeque::with_capacity(capacity))),
+            size: Arc::new(Mutex::new(0)),
             capacity,
             not_full: Arc::new(Condvar::new()),
             not_empty: Arc::new(Condvar::new()),
+            is_closed: Arc::new(Mutex::new(false)),
         }
     }
 
-    //Creats artificial buffer to 'prevent' deadlock. as well as using std sync primitives to create attributes to check if buffer is full or empty
-
-
-    /// Send a value, blocking if the channel is full
-    pub fn send(&self, value: T) {
-        let mut buffer = self.buffer.lock().unwrap();
-        
-        // Wait while the buffer is full. A spurious wakeup is possible, so we need to check the condition again
-        while buffer.len() == self.capacity {
-            buffer = self.not_full.wait(buffer).unwrap();
+    pub fn send(&self, value: T) -> Result<(), SendError<T>> {
+        if *self.is_closed.lock().unwrap() {
+            return Err(SendError::Disconnected(value));
         }
-        //primitive push_back method to add value to buffer
-        buffer.push_back(value);
-        drop(buffer);
+
+        let mut size = self.size.lock().unwrap();
+        
+        while *size >= self.capacity {
+            size = match self.not_full.wait(size) {
+                Ok(guard) => guard,
+                Err(_) => return Err(SendError::Disconnected(value)),
+            };
+            
+            if *self.is_closed.lock().unwrap() {
+                return Err(SendError::Disconnected(value));
+            }
+        }
+        
+        {
+            let mut buffer = self.buffer.lock().unwrap();
+            buffer.push_back(value);
+        }
+        
+        *size += 1;
         self.not_empty.notify_one();
+        Ok(())
     }
 
-    /// Method to receive a value, blocking if the channel is empty
-    pub fn recv(&self) -> T {
-        let mut buffer = self.buffer.lock().unwrap();
+    pub fn send_timeout(&self, value: T, timeout: Duration) -> Result<(), SendTimeoutError<T>> {
+        if *self.is_closed.lock().unwrap() {
+            return Err(SendTimeoutError::Disconnected(value));
+        }
+
+        let deadline = Instant::now() + timeout;
+        let mut size = self.size.lock().unwrap();
         
-        // Wait while the buffer is empty
-        while buffer.is_empty() {
-            buffer = self.not_empty.wait(buffer).unwrap();
+        while *size >= self.capacity {
+            let now = Instant::now();
+            if now >= deadline {
+                return Err(SendTimeoutError::Timeout(value));
+            }
+            
+            let wait_time = deadline - now;
+            match self.not_full.wait_timeout(size, wait_time) {
+                Ok((guard, _)) => size = guard,
+                Err(_) => return Err(SendTimeoutError::Disconnected(value)),
+            };
+            
+            if *self.is_closed.lock().unwrap() {
+                return Err(SendTimeoutError::Disconnected(value));
+            }
         }
         
-        let value = buffer.pop_front().unwrap();
-        drop(buffer);
-        self.not_full.notify_one();
+        {
+            let mut buffer = self.buffer.lock().unwrap();
+            buffer.push_back(value);
+        }
         
-        value
+        *size += 1;
+        self.not_empty.notify_one();
+        Ok(())
     }
-}
 
-/// A simple goroutine-like pool using standard library threads
-pub struct PrimitivePool {
-    threads: Vec<thread::JoinHandle<()>>,
-    task_queue: Arc<Mutex<VecDeque<Box<dyn FnOnce() + Send>>>>,
-    queue_condvar: Arc<Condvar>,
-}
+    pub fn recv(&self) -> Result<T, RecvError> {
+        let mut size = self.size.lock().unwrap();
+        
+        while *size == 0 {
+            if *self.is_closed.lock().unwrap() {
+                return Err(RecvError::Disconnected);
+            }
+            
+            size = match self.not_empty.wait(size) {
+                Ok(guard) => guard,
+                Err(_) => return Err(RecvError::Disconnected),
+            };
+        }
+        
+        let value = {
+            let mut buffer = self.buffer.lock().unwrap();
+            buffer.pop_front().ok_or(RecvError::Empty)?
+        };
+        
+        *size -= 1;
+        self.not_full.notify_one();
+        Ok(value)
+    }
 
-impl PrimitivePool {
-    /// Create a new pool with a specified number of worker threads
-    pub fn new(num_workers: usize) -> Self {
-        let task_queue = Arc::new(Mutex::new(VecDeque::new()));
-        let queue_condvar = Arc::new(Condvar::new());
-        let mut threads = Vec::with_capacity(num_workers);
-
-        for _ in 0..num_workers {
-            let task_queue_clone = Arc::clone(&task_queue);
-            let condvar_clone = Arc::clone(&queue_condvar);
-
-            let handle = thread::spawn(move || {
-                loop {
-                    let mut queue = task_queue_clone.lock().unwrap();
-                    
-                    // Wait for tasks
-                    while queue.is_empty() {
-                        queue = condvar_clone.wait(queue).unwrap();
-                    }
-
-                    // Get and execute task
-                    if let Some(task) = queue.pop_front() {
-                        drop(queue);
-                        task();
+    pub fn recv_timeout(&self, timeout: Duration) -> Result<T, RecvError> {
+        let deadline = Instant::now() + timeout;
+        let mut size = self.size.lock().unwrap();
+        
+        while *size == 0 {
+            if *self.is_closed.lock().unwrap() {
+                return Err(RecvError::Disconnected);
+            }
+            
+            let now = Instant::now();
+            if now >= deadline {
+                return Err(RecvError::Empty);
+            }
+            
+            let wait_time = deadline - now;
+            match self.not_empty.wait_timeout(size, wait_time) {
+                Ok((guard, timeout_result)) => {
+                    size = guard;
+                    if timeout_result.timed_out() {
+                        return Err(RecvError::Empty);
                     }
                 }
-            });
-
-            threads.push(handle);
+                Err(_) => return Err(RecvError::Disconnected),
+            };
         }
-
-        PrimitivePool {
-            threads,
-            task_queue,
-            queue_condvar,
-        }
+        
+        let value = {
+            let mut buffer = self.buffer.lock().unwrap();
+            buffer.pop_front().ok_or(RecvError::Empty)?
+        };
+        
+        *size -= 1;
+        self.not_full.notify_one();
+        Ok(value)
     }
 
-    /// Spawn a task in the pool
-    pub fn spawn<F>(&self, task: F)
-    where
-        F: FnOnce() + Send + 'static,
-    {
-        let mut queue = self.task_queue.lock().unwrap();
-        queue.push_back(Box::new(task));
-        drop(queue);
-        self.queue_condvar.notify_one();
+    pub fn close(&self) {
+        let mut closed = self.is_closed.lock().unwrap();
+        *closed = true;
+        self.not_empty.notify_all();
+        self.not_full.notify_all();
+    }
+
+    pub fn len(&self) -> usize {
+        *self.size.lock().unwrap()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    pub fn capacity(&self) -> usize {
+        self.capacity
+    }
+}
+
+impl<T> Drop for Channelish<T> {
+    fn drop(&mut self) {
+        self.close();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    
+    #[test]
+    fn test_basic_operations() {
+        let channel = Channelish::new(2);
+        assert!(channel.send(1).is_ok());
+        assert!(channel.send(2).is_ok());
+        assert_eq!(channel.recv().unwrap(), 1);
+        assert_eq!(channel.recv().unwrap(), 2);
+    }
+
+    #[test]
+    fn test_timeout() {
+        let channel = Channelish::new(1);
+        assert!(channel.send(1).is_ok());
+        assert!(matches!(
+            channel.send_timeout(2, Duration::from_millis(100)),
+            Err(SendTimeoutError::Timeout(_))
+        ));
     }
 }
 
