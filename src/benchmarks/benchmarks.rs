@@ -2,6 +2,7 @@ use std::time::{Duration, Instant};
 use std::sync::Arc;
 use std::thread;
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use sysinfo::{System, CpuRefreshKind, Cpu};
 
@@ -165,66 +166,60 @@ pub fn run_goroutine_pool_benchmark(task_count: usize, thread_count: usize) -> V
     ]
 }
 
-// pub fn run_async_goroutine_pool_benchmark(task_count: usize, thread_count: usize) -> Vec<BenchmarkResult> {
-//     let (duration, metrics) = measure_system_metrics(|| {
-//         let start = Instant::now();
-//         let rt = tokio::runtime::Runtime::new().unwrap();
-        
-//         rt.block_on(async {
-//             let pool = AsyncGoroutinePool::new(thread_count);
-//             for i in 0..task_count {
-//                 pool.spawn(async move {
-//                     println!(" Async Pool - Task {} starting...", i);
-//                     tokio::time::sleep(Duration::from_millis(TASK_DELAY)).await;
-//                     let mut sum = 0;
-//                     for j in 0..1000 {
-//                         sum += j;
-//                     }
-//                     println!(" Async Pool - Task {} completed ", i);
-//                 });
-//             }
-//         });
-//         start.elapsed()
-//     });
 
-//     vec![
-//         BenchmarkResult::Pool(PoolBenchmarkResult {
-//             name: "AsyncGoroutinePool".to_string(),
-//             total_time: duration,
-//             tasks_completed: task_count,
-//             avg_task_time: duration / task_count as u32,
-//         }),
-//         BenchmarkResult::System(metrics)
-//     ]
-// }
 
 pub fn run_enhanced_goroutine_pool_benchmark(task_count: usize, thread_count: usize) -> Vec<BenchmarkResult> {
+    let completed_count = Arc::new(AtomicUsize::new(0));
     let (duration, metrics) = measure_system_metrics(|| {
         let start = Instant::now();
         let pool = EnhancedGoroutinePool::new(thread_count);
         
-        for i in 0..task_count {
+        // Spawn tasks
+        for _ in 0..task_count {
+            let completed = Arc::clone(&completed_count);
             pool.spawn(move || {
-                println!(" Enhanced Pool - Task {} starting...", i);
-                thread::sleep(Duration::from_millis(TASK_DELAY));
                 let mut sum = 0;
                 for j in 0..1000 {
                     sum += j;
                 }
-                println!("✅ Enhanced Pool - Task {} completed (sum: {})", i, sum);
+                completed.fetch_add(1, Ordering::SeqCst);
                 sum.to_string()
             });
         }
-        pool.collect_results();
-        start.elapsed()
+
+        // Wait with timeout
+        const TIMEOUT_SECS: u64 = 5;
+        const CHECK_INTERVAL_MS: u64 = 100;
+        let deadline = Instant::now() + Duration::from_secs(TIMEOUT_SECS);
+        
+        let mut tasks_completed = 0;
+        while Instant::now() < deadline {
+            tasks_completed = completed_count.load(Ordering::SeqCst);
+            if tasks_completed >= task_count {
+                break;
+            }
+            thread::sleep(Duration::from_millis(CHECK_INTERVAL_MS));
+        }
+
+        // Get available results
+        let results = pool.collect_results();
+        let elapsed = start.elapsed();
+
+        // Update actual completion count
+        tasks_completed = completed_count.load(Ordering::SeqCst);
+        if tasks_completed < task_count {
+            println!("Timeout: Only {}/{} tasks completed", tasks_completed, task_count);
+        }
+
+        elapsed
     });
 
     vec![
         BenchmarkResult::Pool(PoolBenchmarkResult {
             name: "EnhancedGoroutinePool".to_string(),
             total_time: duration,
-            tasks_completed: task_count,
-            avg_task_time: duration / task_count as u32,
+            tasks_completed: completed_count.load(Ordering::SeqCst), // Use actual count
+            avg_task_time: duration / completed_count.load(Ordering::SeqCst) as u32,
         }),
         BenchmarkResult::System(metrics)
     ]

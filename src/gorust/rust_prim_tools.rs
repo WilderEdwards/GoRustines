@@ -217,5 +217,6 @@ mod tests {
 }
 
 
-//Note: Both implementations, like the others, do not fully accomplish the task of goroutines, specifically in dynamic scheduling, thread creation in the pool, and channel implementation
-// specifically, the tokio runtime allows for a more efficient and dynamic scheduling of tasks, as well as the ability to create a pool of threads that can be used to execute tasks concurrently
+// Note: Both implementations, like the others, do not fully accomplish the task of goroutines, specifically in dynamic scheduling, thread creation in the pool, and channel implementation
+// specifically, the corssbeam and rayon APIs allows for a more efficient and dynamic scheduling of tasks, as well as the ability to create a customizable pool of threads at runtim that can be used to execute
+// tasks concurrently

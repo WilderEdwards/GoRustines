@@ -1,0 +1,94 @@
+
+Notes:
+
+Tokio tool can be ran and benchmarked from src/bin, while the rest of the implementations can be directly ran from main. simply use 
+"cargo run --bin async_demo" to run tokio_async_pool
+
+
+
+
+-------------------------adv_go_pool.rs:----------------
+Enhanced Goroutine Pool Implementation in Rust
+
+
+This is my implementation of go inspired thread pools that uses crossbeam channels for communication and rayon for parallel execution.
+Honestly, this is the closest we get to go-like concurrency! (Even though it's incredibly verbose)
+
+TODO: Unbounded channels with crossbeam - difficult to implement to scale without borrow checker fighting
+
+
+The pool consists of:
+- A task distribution system using crossbeam channels
+- A results collection mechanism using Arc<Mutex>
+- Configurable pool size for different workloads
+- Parallel execution capabilities with rayon
+
+Features..
+Task Distribution: Uses bounded channels to prevent overflow
+Thread Safety: Implements Send + Sync traits
+Result Collection: Stores task results in thread-safe vector
+Parallel Execution: Leverages rayon for parallel processing
+
+Takeaways:
+Nothing too different from native Rust, however, rayon and crossbeam allow for a virtual freedom in unbounded threads that are almost 'green',
+like golang, but almost always introduce some sort of performance overhead, as they aren't part of the runtime
+
+
+----------------------rust_prim_tools.rs-----------------------------
+
+This is my best attempt at mimicking go-like channel structures and methods, as well as concurrent processing, with Rust primtives.
+Which actually wasn't bad! It just introduced a lot of abstraction, struct creation, etc. While achieving little in the direction of things like
+green threads, goroutines, etc...
+
+Rust actually provides a great deal of variety out of the box that is only strengthened further by crates like tokio, rayon, crossbeam, thread pool, etc.
+
+But any attempt at making rust concurrency LESS verbose was immediately killed at this point in the project.
+
+Key Components:
+
+StandardChannel: A manually implemented channel with blocking send/receive, and 
+StandardGoroutinePool: A thread pool that mimics Go's goroutine-like behavior
+
+Positives:
+Low-level thread synchronization seamlesssly
+channel-like communication (mimics Go decently well through a little data manipulation)
+
+Negatives:
+Rust already has native threads that do a lot of this better, frankly, and chasing Go's model feels wrong here. But I still wanted to try
+
+
+---------------------tokio_async_pool.rs--------------------------
+
+This is one of the shortest source files, since tokio provides even more variety in concurrency methods and practices, as well as being
+faster than native Rust, as it's a runtime on top of the Rust runtime. 
+
+Code breakdown:
+
+
+Features:
+Faster concurrent tasks
+Controlled concurrency, both manually and dynamically, with semaphore, providing thead-safe reference counting
+async tasks require bounds with static keyword, no awaits or data races
+
+Problems present:
+no timeout mechanism, cancellation support (golang provides this out of box)
+little error handling (frankly, due to time constraints. runtime errors are rare, but happen, with mutable references across threads)
+
+In achieving 'dynamic' thread spawning, resource leaks and dropped handles can occur until wait_until_complete method is complete 
+
+
+
+--------------------------thread_pool.rs-----------------------
+A wrapper around the existing thread-pool crate, which was really just used to demonstrate that thread pools in Rust and Go are quite the same. 
+
+That being said, the main difference that CAN be exemplified here is that Go concurrency, specifically threads, scale MUCH better than Rust's since:
+Go has green threads, and Rust just doesn't. This is why I mainly did this part to demonstrate with benchmarks 
+
+
+Key components:
+ThreadPool - Fixed-size pool from threadpool crate
+Arc<AtomicUsize> - Atomic counter for active tasks
+FnOnce() tasks - One-shot closures that can be sent across threads
+
+Benchmark good to show differences in scale between Go and Rust!
+

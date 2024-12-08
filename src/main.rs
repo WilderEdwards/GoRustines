@@ -10,16 +10,24 @@ use crate::benchmarks::{
     BenchmarkResult
 };
 
+#[cfg(debug_assertions)]
+fn enable_backtrace() {
+    std::env::set_var("RUST_BACKTRACE", "1");
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    enable_backtrace();
     const TASK_COUNT: usize = 100;
-    const THREAD_COUNT: usize = 10;
+    const THREAD_COUNT: usize = 4;
     
     // Collect benchmark results
     let channel_results = vec![
         run_channel_benchmark(TASK_COUNT, THREAD_COUNT)
     ];
 
+    
     let pool_results: Vec<BenchmarkResult> = vec![
+        //CHANGE THESE WHEN TESTING, ALTERNATE COMMENTS, DO NOT RUN BOTH AT THE SAME TIME
         run_goroutine_pool_benchmark(TASK_COUNT, THREAD_COUNT),
         //run_enhanced_goroutine_pool_benchmark(TASK_COUNT, THREAD_COUNT),
     ].into_iter().flatten().collect();
